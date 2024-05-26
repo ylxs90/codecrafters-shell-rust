@@ -4,7 +4,7 @@ use std::io::{self, Write};
 fn main() {
     // You can use print statements as follows for debugging, they'll be visible when running tests.
     // println!("Logs from your program will appear here!");
-
+    let built_in = vec!["echo", "exit", "type"];
     // Uncomment this block to pass the first stage
     loop {
         print!("$ ");
@@ -21,6 +21,13 @@ fn main() {
             }
             "echo" => {
                 println!("{}", vec[1..].join(" "))
+            }
+            "type" => {
+                if built_in.contains(&vec[1]) {
+                    println!("{} is a shell builtin", vec[1]);
+                } else {
+                    println!("{} not found", vec[1]);
+                }
             }
             _ => {
                 println!("{}: command not found", vec[0]);

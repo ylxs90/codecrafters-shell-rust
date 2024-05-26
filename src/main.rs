@@ -19,6 +19,9 @@ fn main() {
             "exit" => {
                 break;
             }
+            "echo" => {
+                println!("{}", vec[1..].join(" "))
+            }
             _ => {
                 println!("{}: command not found", vec[0]);
             }

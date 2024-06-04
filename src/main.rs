@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::str::FromStr;
 
+#[allow(deprecated)]
 fn main() {
     // You can use print statements as follows for debugging, they'll be visible when running tests.
     // println!("Logs from your program will appear here!");
@@ -31,7 +32,9 @@ fn main() {
             }
             "cd" => {
                 let new_path = vec[1];
-                if new_path.starts_with("/") {
+                if new_path == "~" {
+                    current_path = env::home_dir().unwrap();
+                } else if new_path.starts_with("/") {
                     match PathBuf::from_str(new_path) {
                         Ok(new_path) => {
                             if new_path.is_file() || new_path.is_dir() {

@@ -31,16 +31,26 @@ fn main() {
             }
             "cd" => {
                 let new_path = vec[1];
-                match PathBuf::from_str(new_path) {
-                    Ok(new_path) => {
-                        if new_path.is_file() || new_path.is_dir() {
-                            current_path = new_path;
-                        } else{
-                            println!("cd: {}: No such file or directory", vec[1]);
+                if new_path.starts_with("/") {
+                    match PathBuf::from_str(new_path) {
+                        Ok(new_path) => {
+                            if new_path.is_file() || new_path.is_dir() {
+                                current_path = new_path.canonicalize().unwrap();
+                            } else {
+                                println!("cd: {}: No such file or directory", vec[1]);
+                            }
+                        }
+                        Err(_) => {
+                            println!("cd: {new_path}: No such file or directory");
                         }
                     }
-                    Err(_) => {
-                        println!("cd: {new_path}: No such file or directory");
+                } else {
+                    let mut temp = current_path.clone();
+                    temp.push(new_path);
+                    if temp.is_file() || temp.is_dir() {
+                        current_path = temp.canonicalize().unwrap();
+                    } else {
+                        println!("cd: {}: No such file or directory", vec[1]);
                     }
                 }
             }
@@ -110,4 +120,7 @@ fn test_execute() {
     println!("{}", String::from_utf8_lossy(x.unwrap().stdout.as_slice()));
 
     println!("{}", env::current_dir().unwrap().to_str().unwrap());
+    let mut path = env::current_dir().unwrap();
+    path.push("..");
+    println!("{:?}", path.canonicalize().unwrap());
 }

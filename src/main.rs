@@ -1,10 +1,10 @@
+use homedir::get_my_home;
 use std::env;
 #[allow(unused_imports)]
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::Command;
 use std::str::FromStr;
-use homedir::get_my_home;
 
 fn main() {
     // You can use print statements as follows for debugging, they'll be visible when running tests.
@@ -26,6 +26,9 @@ fn main() {
         let mut input = String::new();
         stdin.read_line(&mut input).unwrap();
         let vec: Vec<&str> = input.trim().split_whitespace().collect();
+        if vec.is_empty() {
+            continue;
+        }
         match vec[0] {
             "exit" => {
                 break;
@@ -56,6 +59,11 @@ fn main() {
                 println!("{}", vec[1..].join(" "))
             }
             "type" => {
+                if vec.len() < 2 {
+                    eprintln!("no argument after type");
+                    continue;
+                }
+
                 if built_in.contains(&vec[1]) {
                     println!("{} is a shell builtin", vec[1]);
                 } else {
@@ -71,21 +79,22 @@ fn main() {
                     }
                 }
             }
-            _cmd => {
-                match find(&path, _cmd.to_string()) {
-                    None => {
-                        println!("{}: command not found", vec[0]);
-                    }
-                    Some(cmd) => {
-                        let mut command = Command::new(cmd);
-                        vec[1..].iter().for_each(|arg| {
-                            command.arg(arg);
-                        });
-                        let x = command.output();
-                        print!("{}", String::from_utf8_lossy(x.unwrap().stdout.as_slice()));
-                    }
+            _cmd => match find(&path, _cmd.to_string()) {
+                None => {
+                    println!("{}: command not found", vec[0]);
                 }
-            }
+                Some(cmd) => {
+                    if cmd.trim().is_empty() {
+                        continue;
+                    }
+                    let mut command = Command::new(cmd);
+                    vec[1..].iter().for_each(|arg| {
+                        command.arg(arg);
+                    });
+                    let x = command.output();
+                    print!("{}", String::from_utf8_lossy(x.unwrap().stdout.as_slice()));
+                }
+            },
         }
     }
 }
@@ -105,7 +114,10 @@ fn real_path(new_path: PathBuf, current_path: PathBuf) -> PathBuf {
     if new_path.is_file() || new_path.is_dir() {
         new_path.canonicalize().unwrap()
     } else {
-        println!("cd: {}: No such file or directory", new_path.to_str().unwrap());
+        println!(
+            "cd: {}: No such file or directory",
+            new_path.to_str().unwrap()
+        );
         current_path
     }
 }

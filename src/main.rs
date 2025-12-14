@@ -1,11 +1,11 @@
 use homedir::get_my_home;
+use is_executable::IsExecutable;
 use std::env;
 #[allow(unused_imports)]
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::Command;
 use std::str::FromStr;
-use is_executable::IsExecutable;
 
 fn main() {
     // You can use print statements as follows for debugging, they'll be visible when running tests.
@@ -28,6 +28,7 @@ fn main() {
         stdin.read_line(&mut input).unwrap();
         match spilt_input(&input) {
             Ok(vec) => {
+                let vec = vec.iter().map(String::as_str).collect::<Vec<_>>();
                 if vec.is_empty() {
                     continue;
                 }
@@ -130,16 +131,16 @@ fn real_path(new_path: PathBuf, current_path: PathBuf) -> PathBuf {
 }
 
 // one-line cmd only
-fn spilt_input(input: &str) -> Result<Vec<&str>, String> {
+fn spilt_input(input: &str) -> Result<Vec<String>, String> {
     let mut data = input.trim();
     if !data.contains('\'') {
-        return Ok(data.split_whitespace().collect());
+        return Ok(data.split_whitespace().map(|s| s.to_string()).collect());
     }
 
-    let mut vec = Vec::new();
+    let mut vec: Vec<String> = Vec::new();
     // exact cmd
     if let Some((i, _)) = data.char_indices().find(|(_, ch)| ch.is_whitespace()) {
-        vec.push(data[..i].trim());
+        vec.push(data[..i].trim().to_string());
         data = &data[i + 1..].trim();
         // println!("cmd: {}", vec[0]);
         // println!("args: {}", data);
@@ -149,7 +150,7 @@ fn spilt_input(input: &str) -> Result<Vec<&str>, String> {
         if let Some((l, _)) = data.char_indices().find(|(_, ch)| *ch == '\'') {
             if l > 0 {
                 let temp = data[..l].trim();
-                temp.split_whitespace().for_each(|s| vec.push(s));
+                temp.split_whitespace().for_each(|s| vec.push(s.to_string()));
             }
 
             if let Some((r, _)) = data.char_indices().skip(l + 1).find(|(_, ch)| *ch == '\'') {
@@ -157,7 +158,33 @@ fn spilt_input(input: &str) -> Result<Vec<&str>, String> {
                 if r - l == 1 {
                     data = &data[r + 1..];
                 } else {
-                    vec.push(&data[l + 1..r]);
+                    // deal with double '
+                    if r < data.len() {
+                        if &'\'' == &data[r + 1..r + 2].chars().next().unwrap() {
+                            if let Some((r2, _)) = data
+                                .char_indices()
+                                .skip(r + 2)
+                                .find(|(_, ch)| *ch == '\'' )
+                            {
+                                let temp = &data[l + 1..r2];
+                                let temp = temp.replace("''", "");
+                                vec.push(temp);
+                                data = &data[r2 + 1..];
+                                continue;
+                            } else {
+                                let error = format!(
+                                    r#"
+single quote not matched:
+input:    [{input}]
+error on: [{}]"#,
+                                    &data[l..]
+                                );
+                                return Err(error);
+                            }
+                        }
+                    }
+
+                    vec.push(data[l + 1..r].to_string());
                     data = &data[r + 1..];
                 }
             } else {
@@ -171,7 +198,7 @@ error on: [{}]"#,
                 return Err(error);
             }
         } else {
-            data.split_whitespace().for_each(|s| vec.push(s));
+            data.split_whitespace().for_each(|s| vec.push(s.to_string()));
             break;
         }
     }

@@ -138,6 +138,7 @@ fn spilt_input(input: &str) -> Result<Vec<String>> {
         Normal,
         InSingleQuote,
         InDoubleQuote,
+        Escape,
     }
 
     let mut state = Mode::Normal;
@@ -163,6 +164,9 @@ fn spilt_input(input: &str) -> Result<Vec<String>> {
                 ' ' | '\t' => {
                     push_str_and_clear(&mut current, &mut vec);
                 }
+                '\\' => {
+                    state = Mode::Escape;
+                }
                 _ => current.push(c),
             },
             Mode::InSingleQuote => match c {
@@ -186,6 +190,10 @@ fn spilt_input(input: &str) -> Result<Vec<String>> {
                 _ => {
                     current.push(c);
                 }
+            },
+            Mode::Escape => {
+                current.push(c);
+                state = Mode::Normal;
             },
         }
     }
@@ -263,4 +271,24 @@ fn test_spilt_input() {
             eprintln!("{}", err);
         }
     }
+}
+
+#[test]
+fn test_spilt_output() -> Result<()> {
+    let args = spilt_input("  echo 'hello''world'")?;
+    let except = vec!["echo", "helloworld"];
+    assert_eq!(args, except
+        .iter()
+        .map(|s| s.to_string())
+        .collect::<Vec<String>>());
+
+    let args = spilt_input(r#"echo "world  hello"  "test""shell"#)?;
+    assert_eq!(args, vec!["echo".to_string(), "world  hello".to_string(), "testshell".to_string()]);
+
+
+    let args = spilt_input(r#"echo world\ \ hello  test\nshello"#)?;
+    assert_eq!(args, vec!["echo".to_string(), "world  hello".to_string(), "testnshello".to_string()]);
+    Ok(())
+
+
 }

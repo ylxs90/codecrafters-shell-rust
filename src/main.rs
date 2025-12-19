@@ -94,6 +94,7 @@ fn main() {
                             vec[1..].iter().for_each(|arg| {
                                 command.arg(arg);
                             });
+                            println!("{:?}", command);
                             let x = command.output();
                             print!("{}", String::from_utf8_lossy(x.unwrap().stdout.as_slice()));
                         }

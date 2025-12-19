@@ -174,7 +174,6 @@ fn spilt_input(input: &str) -> Result<Vec<String>> {
                 '\'' => {
                     if !chars.next_if(|c| *c == '\'').is_some() {
                         state = Mode::Normal;
-                        push_str_and_clear(&mut current, &mut vec);
                     }
                 }
                 _ => {
@@ -185,7 +184,6 @@ fn spilt_input(input: &str) -> Result<Vec<String>> {
                 '\"' => {
                     if !chars.next_if(|c| *c == '\"').is_some() {
                         state = Mode::Normal;
-                        push_str_and_clear(&mut current, &mut vec);
                     }
                 }
                 '\\' => {
@@ -299,12 +297,16 @@ fn test_spilt_output() -> Result<()> {
             r#"echo "shell'world'\\'test""#,
             vec!["echo", r#"shell'world'\'test"#],
         ),
+        (
+            r#"echo "example\"insidequotes"shell\""#,
+            vec!["echo", r#"example"insidequotesshell""#],
+        ),
     ];
 
     for (i, (src, res)) in tests.iter().enumerate() {
         print!("test {:02}--> {src} ", i + 1);
         let r = spilt_input(src)?;
-        print!("{r:?}");
+        // print!("{r:?}");
         assert_eq!(
             r,
             res.iter().map(|s| s.to_string()).collect::<Vec<String>>()

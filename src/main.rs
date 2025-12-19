@@ -137,6 +137,7 @@ fn spilt_input(input: &str) -> Result<Vec<String>> {
     enum Mode {
         Normal,
         InSingleQuote,
+        InDoubleQuote,
     }
 
     let mut state = Mode::Normal;
@@ -148,34 +149,38 @@ fn spilt_input(input: &str) -> Result<Vec<String>> {
         match state {
             Mode::Normal => match c {
                 '\'' => {
-                    if let Some('\'') = chars.peek() {
-                        chars.next();
-                    } else {
+                    if !chars.next_if(|c| *c == '\'').is_some() {
                         state = Mode::InSingleQuote;
-                        if !current.is_empty() {
-                            vec.push(current.clone());
-                            current = String::new();
-                        }
+                        push_str_and_clear(&mut current, &mut vec);
+                    }
+                }
+                '\"' => {
+                    if !chars.next_if(|c| *c == '\"').is_some() {
+                        state = Mode::InDoubleQuote;
+                        push_str_and_clear(&mut current, &mut vec);
                     }
                 }
                 ' ' | '\t' => {
-                    if !current.is_empty() {
-                        vec.push(current.clone());
-                        current = String::new();
-                    }
+                    push_str_and_clear(&mut current, &mut vec);
                 }
                 _ => current.push(c),
             },
             Mode::InSingleQuote => match c {
                 '\'' => {
-                    if let Some('\'') = chars.peek() {
-                        chars.next();
-                    } else {
+                    if !chars.next_if(|c| *c == '\'').is_some() {
                         state = Mode::Normal;
-                        if !current.is_empty() {
-                            vec.push(current.clone());
-                            current = String::new();
-                        }
+                        push_str_and_clear(&mut current, &mut vec);
+                    }
+                }
+                _ => {
+                    current.push(c);
+                }
+            },
+            Mode::InDoubleQuote => match c {
+                '\"' => {
+                    if !chars.next_if(|c| *c == '\"').is_some() {
+                        state = Mode::Normal;
+                        push_str_and_clear(&mut current, &mut vec);
                     }
                 }
                 _ => {
@@ -184,11 +189,17 @@ fn spilt_input(input: &str) -> Result<Vec<String>> {
             },
         }
     }
-    if !current.is_empty() {
-        vec.push(current.clone());
-    }
+
+    push_str_and_clear(&mut current, &mut vec);
 
     Ok(vec)
+}
+
+fn push_str_and_clear(string: &mut String, vec: &mut Vec<String>) {
+    if !string.is_empty() {
+        vec.push(string.clone());
+        string.clear();
+    }
 }
 
 #[test]

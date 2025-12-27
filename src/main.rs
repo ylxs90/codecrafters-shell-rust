@@ -5,7 +5,7 @@ use crossterm::{cursor, execute};
 use homedir::get_my_home;
 use is_executable::IsExecutable;
 use std::cmp::{max, min};
-use std::fs::read_to_string;
+use std::fs::{read_to_string, OpenOptions};
 use std::io::Stdout;
 #[allow(unused_imports)]
 use std::io::{self, stdout, Write};
@@ -60,6 +60,13 @@ fn main() {
                                     let mut history = records.join("\n");
                                     history.push('\n');
                                     fs::write(vec[2], history).unwrap();
+                                }
+                                "-a" => {
+                                    let mut file = OpenOptions::new().append(true).open(vec[2]).unwrap();
+                                    let mut history = records.join("\n");
+                                    history.push('\n');
+                                    write!(file, "{}", history).unwrap();
+                                    records.clear();
                                 }
                                 _ => {}
                             }

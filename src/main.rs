@@ -26,7 +26,7 @@ fn main() {
     let mut records: Vec<String> = Vec::new();
     // Uncomment this block to pass the first stage
 
-    let mut history_file = env::var("HISTFILE");
+    let history_file = env::var("HISTFILE");
     match history_file.clone() {
         Ok(history_file) => {
             read_to_string(history_file)
@@ -57,7 +57,8 @@ fn main() {
                     records.push(input.trim().to_string());
                 }
 
-                if vec.len() > 2 && vec[vec.len() - 2].contains('<') {}
+                //
+                if vec.len() > 2 && vec[vec.len() - 2].contains('>') {}
 
                 match vec[0] {
                     "history" => {
@@ -118,7 +119,7 @@ fn main() {
                                     current_path = real_path(new_path, current_path);
                                 }
                                 Err(_) => {
-                                    println!("cd: {new_path}: No such file or directory");
+                                    eprintln!("cd: {new_path}: No such file or directory");
                                 }
                             }
                         } else {
@@ -146,7 +147,7 @@ fn main() {
                                 None => {
                                     // should be:
                                     // println!("{}: command not found", vec[1]);
-                                    println!("{}: not found", vec[1]);
+                                    eprintln!("{}: not found", vec[1]);
                                 }
                                 Some(cmd) => {
                                     println!("{} is {}", vec[1], cmd)
@@ -156,7 +157,7 @@ fn main() {
                     }
                     _cmd => match find(&path, _cmd.to_string()) {
                         None => {
-                            println!("{}: command not found", vec[0]);
+                            eprintln!("{}: command not found", vec[0]);
                         }
                         Some(cmd) => {
                             if cmd.trim().is_empty() {
@@ -195,7 +196,7 @@ fn real_path(new_path: PathBuf, current_path: PathBuf) -> PathBuf {
     if new_path.is_file() || new_path.is_dir() {
         new_path.canonicalize().unwrap()
     } else {
-        println!(
+        eprintln!(
             "cd: {}: No such file or directory",
             new_path.to_str().unwrap()
         );
@@ -342,6 +343,7 @@ fn read_line_crossterm(history: &Vec<String>) -> Result<String> {
                         replace_line(&mut buffer, cmd, &mut stdout)?;
                     }
                 }
+                KeyCode::Left | KeyCode::Right => {}
                 _ => {}
             },
             _ => {}
@@ -364,6 +366,43 @@ fn replace_line(buffer: &mut String, cmd: &String, stdout: &mut Stdout) -> Resul
     stdout.flush()?;
     Ok(())
 }
+
+struct CommandSpec {
+    argv: Vec<String>,
+    redirects: Vec<Redirect>,
+}
+
+impl TryFrom<Vec<String>> for CommandSpec {
+    type Error = String;
+
+    fn try_from(value: Vec<String>) -> std::result::Result<Self, Self::Error> {
+        let mut tokens = value.into_iter().peekable();
+        while let Some(token) = tokens.next() {}
+
+
+        todo!()
+    }
+}
+
+#[derive(Debug, Clone)]
+struct Redirect {
+    fd: i32, // 0 stdin, 1 stdout, 2 stderr
+    target: String,
+    mode: RedirectOp,
+}
+
+#[derive(Debug, Copy, Clone, Default)]
+enum RedirectOp {
+    #[default]
+    Write,
+    Append,
+}
+
+enum AstNode {
+    Command(CommandSpec),
+    Pipeline(Vec<CommandSpec>),
+}
+
 #[test]
 fn test_find() {
     let paths: Vec<PathBuf> = vec!["/bin"].iter().map(|s| s.into()).collect();

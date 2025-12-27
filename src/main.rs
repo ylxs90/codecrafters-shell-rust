@@ -57,7 +57,9 @@ fn main() {
                                     .filter(|l| !l.is_empty())
                                     .for_each(|l| records.push(l.trim().to_string())),
                                 "-w" => {
-                                    fs::write(vec[2], records.join("\n")).unwrap();
+                                    let mut history = records.join("\n");
+                                    history.push('\n');
+                                    fs::write(vec[2], history).unwrap();
                                 }
                                 _ => {}
                             }

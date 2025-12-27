@@ -5,7 +5,6 @@ use crossterm::{cursor, execute};
 use homedir::get_my_home;
 use is_executable::IsExecutable;
 use std::cmp::{max, min};
-use std::env;
 use std::fs::read_to_string;
 use std::io::Stdout;
 #[allow(unused_imports)]
@@ -13,6 +12,7 @@ use std::io::{self, stdout, Write};
 use std::path::PathBuf;
 use std::process::Command;
 use std::str::FromStr;
+use std::{env, fs};
 
 fn main() {
     // You can use print statements as follows for debugging, they'll be visible when running tests.
@@ -56,7 +56,9 @@ fn main() {
                                     .lines()
                                     .filter(|l| !l.is_empty())
                                     .for_each(|l| records.push(l.trim().to_string())),
-                                "-w" => {}
+                                "-w" => {
+                                    fs::write(vec[2], records.join("\n")).unwrap();
+                                }
                                 _ => {}
                             }
                             continue;

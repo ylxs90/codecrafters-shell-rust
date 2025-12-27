@@ -26,16 +26,17 @@ fn main() {
     let mut records: Vec<String> = Vec::new();
     // Uncomment this block to pass the first stage
 
-
-    if let Ok(history_file) = env::var("HISTFILE") {
-        read_to_string(history_file)
-            .unwrap()
-            .lines()
-            .filter(|l| !l.is_empty())
-            .for_each(|l| records.push(l.trim().to_string()));
+    let mut history_file = env::var("HISTFILE");
+    match history_file.clone() {
+        Ok(history_file) => {
+            read_to_string(history_file)
+                .unwrap()
+                .lines()
+                .filter(|l| !l.is_empty())
+                .for_each(|l| records.push(l.trim().to_string()));
+        }
+        _ => {}
     }
-
-
 
     loop {
         print!("$ ");
@@ -73,7 +74,8 @@ fn main() {
                                     fs::write(vec[2], history).unwrap();
                                 }
                                 "-a" => {
-                                    let mut file = OpenOptions::new().append(true).open(vec[2]).unwrap();
+                                    let mut file =
+                                        OpenOptions::new().append(true).open(vec[2]).unwrap();
                                     let mut history = records.join("\n");
                                     history.push('\n');
                                     write!(file, "{}", history).unwrap();
@@ -96,6 +98,14 @@ fn main() {
                         }
                     }
                     "exit" => {
+                        match history_file {
+                            Ok(history_file) => {
+                                let mut history = records.join("\n");
+                                history.push('\n');
+                                fs::write(history_file, history).unwrap();
+                            }
+                            Err(_) => {}
+                        }
                         break;
                     }
                     "cd" => {

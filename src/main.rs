@@ -26,6 +26,17 @@ fn main() {
     let mut records: Vec<String> = Vec::new();
     // Uncomment this block to pass the first stage
 
+
+    if let Ok(history_file) = env::var("HISTFILE") {
+        read_to_string(history_file)
+            .unwrap()
+            .lines()
+            .filter(|l| !l.is_empty())
+            .for_each(|l| records.push(l.trim().to_string()));
+    }
+
+
+
     loop {
         print!("$ ");
         stdout().flush().unwrap();

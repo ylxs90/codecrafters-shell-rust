@@ -5,16 +5,16 @@ use crossterm::{cursor, execute};
 use homedir::get_my_home;
 use is_executable::IsExecutable;
 use std::cmp::{max, min};
+use std::collections::HashSet;
 use std::fs::{read_dir, read_to_string, OpenOptions};
 use std::io::Stdout;
 #[allow(unused_imports)]
 use std::io::{self, stdout, Write};
+use std::os::fd::{AsRawFd, RawFd};
 use std::path::PathBuf;
 use std::process::Command;
 use std::str::FromStr;
 use std::{env, fs};
-
-use std::os::fd::{AsRawFd, RawFd};
 
 mod trie;
 
@@ -29,15 +29,18 @@ fn main() {
     let built_in = vec!["echo", "exit", "type", "pwd", "cd", "history"];
     let mut records: Vec<String> = Vec::new();
     // Uncomment this block to pass the first stage
+    let mut cmd_list = vec![];
 
-    let mut cmd_list: Vec<String> = built_in.iter().map(|s| s.to_string()).collect();
-
+    built_in.iter().map(|s| s.to_string()).for_each(|s| {
+        cmd_list.push(s.clone());
+    });
 
     build_complete_dictionary(&path)
         .unwrap_or_default()
         .iter()
-        .for_each(|c| cmd_list.push(c.to_string()));
-
+        .for_each(|c| {
+            cmd_list.push(c.to_string());
+        });
 
     let history_file = env::var("HISTFILE");
     match history_file.clone() {
@@ -369,67 +372,105 @@ fn read_line_crossterm(history: &[String], cmd_list: &[String]) -> Result<String
     let mut stdout = stdout();
     let mut buffer = String::new();
     let mut i: i32 = history.len() as i32;
-
+    let mut is_last_tab_pressed = false;
     loop {
         match read()? {
-            Event::Key(event) => match event.code {
-                KeyCode::Char(c) => {
-                    if event.modifiers == KeyModifiers::CONTROL && c == 'c' {
-                        println!(" ^C");
-                        disable_raw_mode()?;
-                        std::process::exit(1);
-                    } else if event.modifiers == KeyModifiers::CONTROL && c == 'j' {
-                        // ctrl + j acts Enter in bash/zsh
+            Event::Key(event) => {
+                if event.code != KeyCode::Tab {
+                    is_last_tab_pressed = false;
+                }
+
+                match event.code {
+                    KeyCode::Char(c) => {
+                        if event.modifiers == KeyModifiers::CONTROL && c == 'c' {
+                            println!(" ^C");
+                            disable_raw_mode()?;
+                            std::process::exit(1);
+                        } else if event.modifiers == KeyModifiers::CONTROL && c == 'j' {
+                            // ctrl + j acts Enter in bash/zsh
+                            print!("\r\n");
+                            break;
+                        } else {
+                            buffer.push(c);
+                            print!("{}", c);
+                            stdout.flush()?;
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        if !buffer.is_empty() {
+                            buffer.pop();
+                            print!("\x08 \x08");
+                            stdout.flush()?;
+                        }
+                    }
+                    KeyCode::Enter => {
                         print!("\r\n");
                         break;
-                    } else {
-                        buffer.push(c);
-                        print!("{}", c);
-                        stdout.flush()?;
                     }
-                }
-                KeyCode::Backspace => {
-                    if !buffer.is_empty() {
-                        buffer.pop();
-                        print!("\x08 \x08");
-                        stdout.flush()?;
-                    }
-                }
-                KeyCode::Enter => {
-                    print!("\r\n");
-                    break;
-                }
-                KeyCode::Up => {
-                    if history.is_empty() {
-                        continue;
-                    }
-                    i = max(0, i - 1);
+                    KeyCode::Up => {
+                        if history.is_empty() {
+                            continue;
+                        }
+                        i = max(0, i - 1);
 
-                    if let Some(cmd) = history.iter().nth(i as usize) {
-                        replace_line(&mut buffer, cmd, &mut stdout)?;
+                        if let Some(cmd) = history.iter().nth(i as usize) {
+                            replace_line(&mut buffer, cmd, &mut stdout)?;
+                        }
                     }
-                }
-                KeyCode::Down => {
-                    if history.is_empty() {
-                        continue;
-                    }
-                    i = min(history.len() as i32 - 1, i + 1);
+                    KeyCode::Down => {
+                        if history.is_empty() {
+                            continue;
+                        }
+                        i = min(history.len() as i32 - 1, i + 1);
 
-                    if let Some(cmd) = history.iter().nth(i as usize) {
-                        replace_line(&mut buffer, cmd, &mut stdout)?;
+                        if let Some(cmd) = history.iter().nth(i as usize) {
+                            replace_line(&mut buffer, cmd, &mut stdout)?;
+                        }
                     }
-                }
-                KeyCode::Left | KeyCode::Right => {}
-                KeyCode::Tab => {
-                    if let Some(cmd) = cmd_list.iter().find(|c| c.starts_with(&buffer)) {
-                        replace_line(&mut buffer, &format!("{cmd} "), &mut stdout)?;
-                    } else {
-                        print!("{}", '\x07');
-                        stdout.flush()?;
+                    KeyCode::Left | KeyCode::Right => {}
+                    KeyCode::Tab => {
+                        let mut matched_list: HashSet<&String> = HashSet::new();
+
+                        cmd_list
+                            .iter()
+                            .filter(|c| c.starts_with(&buffer))
+                            .for_each(|c| {
+                                matched_list.insert(c);
+                            });
+
+                        if matched_list.is_empty() {
+                            print!("{}", '\x07');
+                            stdout.flush()?;
+                        } else if matched_list.len() > 1 {
+                            if is_last_tab_pressed {
+                                let mut list = String::new();
+                                let mut matched_list: Vec<&&String> = matched_list.iter().collect();
+                                matched_list.sort();
+                                let mut iter = matched_list.iter().peekable();
+                                iter.clone().for_each(|s| {
+                                    list.push_str(s);
+                                    if iter.peek().is_some() {
+                                        list.push_str("  ");
+                                    }
+                                });
+                                print!("\r\n{list}\r\n$ {buffer}");
+                                stdout.flush()?;
+                            } else {
+                                print!("\x07");
+                                stdout.flush()?;
+                            }
+                        } else {
+                            replace_line(
+                                &mut buffer,
+                                &format!("{} ", matched_list.drain().next().unwrap()),
+                                &mut stdout,
+                            )?;
+                        }
+                        is_last_tab_pressed = true;
                     }
+                    _ => {}
                 }
-                _ => {}
-            },
+            }
             _ => {}
         }
     }

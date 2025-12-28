@@ -442,23 +442,20 @@ fn read_line_crossterm(history: &[String], cmd_list: &[String]) -> Result<String
                             print!("{}", '\x07');
                             stdout.flush()?;
                         } else if matched_list.len() > 1 {
-                            if is_last_tab_pressed {
-                                let mut list = String::new();
-                                let mut matched_list: Vec<&&String> = matched_list.iter().collect();
-                                matched_list.sort();
-                                let mut iter = matched_list.iter().peekable();
-                                iter.clone().for_each(|s| {
-                                    list.push_str(s);
-                                    if iter.peek().is_some() {
-                                        list.push_str("  ");
-                                    }
-                                });
-                                print!("\r\n{list}\r\n$ {buffer}");
-                                stdout.flush()?;
-                            } else {
-                                print!("\x07");
-                                stdout.flush()?;
-                            }
+                            let mut list = String::new();
+                            let mut matched_list: Vec<&&String> = matched_list.iter().collect();
+                            matched_list.sort();
+                            let mut iter = matched_list.iter().peekable();
+                            iter.clone().for_each(|s| {
+                                list.push_str(s);
+                                if iter.peek().is_some() {
+                                    list.push_str("  ");
+                                }
+                            });
+
+                            buffer = (**matched_list.get(0).unwrap()).clone();
+                            print!("\r\n{list}\r\n$ {buffer}");
+                            stdout.flush()?;
                         } else {
                             replace_line(
                                 &mut buffer,

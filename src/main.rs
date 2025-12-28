@@ -5,7 +5,7 @@ use crossterm::{cursor, execute};
 use homedir::get_my_home;
 use is_executable::IsExecutable;
 use std::cmp::{max, min};
-use std::fs::{read_to_string, OpenOptions};
+use std::fs::{read_dir, read_to_string, OpenOptions};
 use std::io::Stdout;
 #[allow(unused_imports)]
 use std::io::{self, stdout, Write};
@@ -32,10 +32,12 @@ fn main() {
 
     let mut cmd_list: Vec<String> = built_in.iter().map(|s| s.to_string()).collect();
 
+
     build_complete_dictionary(&path)
         .unwrap_or_default()
         .iter()
         .for_each(|c| cmd_list.push(c.to_string()));
+
 
     let history_file = env::var("HISTFILE");
     match history_file.clone() {
@@ -535,8 +537,24 @@ enum AstNode {
     Pipeline(Vec<CommandSpec>),
 }
 
-fn build_complete_dictionary(_paths: &[PathBuf]) -> Result<Vec<String>, String> {
-    Ok(vec![])
+fn build_complete_dictionary(paths: &[PathBuf]) -> Result<Vec<String>, String> {
+    let mut cmds = Vec::new();
+
+    for path in paths {
+        match read_dir(&path) {
+            Ok(dir) => dir.for_each(|c| match c {
+                Ok(f) => {
+                    let p = f.path();
+                    if p.is_file() && p.is_executable() {
+                        cmds.push(p.file_name().unwrap().to_str().unwrap().to_string());
+                    }
+                }
+                Err(_) => {}
+            }),
+            Err(_) => {}
+        }
+    }
+    Ok(cmds)
 }
 
 #[test]

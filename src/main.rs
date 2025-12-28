@@ -430,7 +430,6 @@ fn read_line_crossterm(history: &[String], cmd_list: &[String]) -> Result<String
                     KeyCode::Left | KeyCode::Right => {}
                     KeyCode::Tab => {
                         let mut matched_list: HashSet<&String> = HashSet::new();
-
                         cmd_list
                             .iter()
                             .filter(|c| c.starts_with(&buffer))
@@ -441,29 +440,32 @@ fn read_line_crossterm(history: &[String], cmd_list: &[String]) -> Result<String
                         if matched_list.is_empty() {
                             print!("{}", '\x07');
                             stdout.flush()?;
-                        } else if matched_list.len() > 1 {
-                            let mut list = String::new();
-                            let mut matched_list: Vec<&&String> = matched_list.iter().collect();
-                            matched_list.sort();
-                            let mut iter = matched_list.iter().peekable();
-                            iter.clone().for_each(|s| {
-                                list.push_str(s);
-                                if iter.peek().is_some() {
-                                    list.push_str("  ");
-                                }
-                            });
-
-                            buffer = (**matched_list.get(0).unwrap()).clone();
-                            print!("\r\n{list}\r\n$ {buffer}");
-                            stdout.flush()?;
                         } else {
-                            replace_line(
-                                &mut buffer,
-                                &format!("{} ", matched_list.drain().next().unwrap()),
-                                &mut stdout,
-                            )?;
+                            let mut matched_list: Vec<&String> =
+                                matched_list.iter().map(|s| *s).collect();
+                            let cmd = longest_common_prefix(&matched_list);
+                            if buffer != cmd {
+                                replace_line(&mut buffer, &format!("{cmd}{}", if matched_list.len() == 1 { " " } else { "" }), &mut stdout)?;
+                            } else {
+                                if is_last_tab_pressed {
+                                    matched_list.sort();
+                                    let mut iter = matched_list.iter().peekable();
+                                    let mut list = String::new();
+                                    iter.clone().for_each(|s| {
+                                        list.push_str(s);
+                                        if iter.peek().is_some() {
+                                            list.push_str("  ");
+                                        }
+                                    });
+                                    print!("\r\n{list}\r\n$ {buffer}");
+                                    stdout.flush()?;
+                                } else {
+                                    print!("\x07");
+                                    stdout.flush()?;
+                                    is_last_tab_pressed = true;
+                                }
+                            }
                         }
-                        is_last_tab_pressed = true;
                     }
                     _ => {}
                 }
@@ -487,6 +489,31 @@ fn replace_line(buffer: &mut String, cmd: &String, stdout: &mut Stdout) -> Resul
     print!("$ {cmd}");
     stdout.flush()?;
     Ok(())
+}
+
+fn longest_common_prefix(items: &[&String]) -> String {
+    if items.is_empty() {
+        return String::new();
+    }
+
+    let mut prefix = items[0].clone();
+
+    for s in &items[1..] {
+        let mut i = 0;
+        let max = prefix.len().min(s.len());
+
+        while i < max && prefix.as_bytes()[i] == s.as_bytes()[i] {
+            i += 1;
+        }
+
+        prefix.truncate(i);
+
+        if prefix.is_empty() {
+            break;
+        }
+    }
+
+    prefix
 }
 
 #[derive(Debug, Default)]

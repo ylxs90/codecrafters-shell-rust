@@ -4,6 +4,8 @@ use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use crossterm::{cursor, execute};
 use homedir::get_my_home;
 use is_executable::IsExecutable;
+use nix::sys::wait::waitpid;
+use nix::unistd::{close, dup2, execvp, fork, pipe, ForkResult};
 use std::cmp::{max, min};
 use std::collections::HashSet;
 use std::fs::{read_dir, read_to_string, OpenOptions};
@@ -23,7 +25,12 @@ fn main() {
     // println!("Logs from your program will appear here!");
     let mut current_path = env::current_dir().unwrap();
     let path = env::var("PATH").unwrap_or_default();
-    let path: Vec<PathBuf> = path.trim().split(":").map(|s| s.into()).collect();
+    let path: Vec<PathBuf> = path
+        .trim()
+        .split(":")
+        .filter(|s| !s.starts_with("/mnt/c"))
+        .map(|s| s.into())
+        .collect();
     // println!("{:?}", path);
 
     let built_in = vec!["echo", "exit", "type", "pwd", "cd", "history"];
@@ -34,7 +41,9 @@ fn main() {
     built_in.iter().map(|s| s.to_string()).for_each(|s| {
         cmd_list.push(s.clone());
     });
+    // path.iter().for_each(|p| println!("{p:?}"));
 
+    // let now = Instant::now();
     build_complete_dictionary(&path)
         .unwrap_or_default()
         .iter()
@@ -42,6 +51,7 @@ fn main() {
             cmd_list.push(c.to_string());
         });
 
+    // println!("build complete_dictionary use {}ms", now.elapsed().as_millis());
     let history_file = env::var("HISTFILE");
     match history_file.clone() {
         Ok(history_file) => {
@@ -269,6 +279,10 @@ fn spilt_input(input: &str) -> Result<Vec<String>, String> {
                 '\\' => {
                     state = Mode::Escape;
                 }
+                '|' => {
+                    push_str_and_clear(&mut current, &mut vec);
+                    vec.push("|".to_string());
+                }
                 _ => current.push(c),
             },
             Mode::InSingleQuote => match c {
@@ -361,7 +375,7 @@ fn restore_redirects(saved_fds: &[(RawFd, RawFd)]) -> Result<(), String> {
 }
 
 fn push_str_and_clear(string: &mut String, vec: &mut Vec<String>) {
-    if !string.is_empty() {
+    if !string.trim().is_empty() {
         vec.push(string.clone());
         string.clear();
     }
@@ -385,7 +399,7 @@ fn read_line_crossterm(history: &[String], cmd_list: &[String]) -> Result<String
                         if event.modifiers == KeyModifiers::CONTROL && c == 'c' {
                             println!(" ^C");
                             disable_raw_mode()?;
-                            std::process::exit(1);
+                            std::process::exit(0);
                         } else if event.modifiers == KeyModifiers::CONTROL && c == 'j' {
                             // ctrl + j acts Enter in bash/zsh
                             print!("\r\n");
@@ -445,7 +459,14 @@ fn read_line_crossterm(history: &[String], cmd_list: &[String]) -> Result<String
                                 matched_list.iter().map(|s| *s).collect();
                             let cmd = longest_common_prefix(&matched_list);
                             if buffer != cmd {
-                                replace_line(&mut buffer, &format!("{cmd}{}", if matched_list.len() == 1 { " " } else { "" }), &mut stdout)?;
+                                replace_line(
+                                    &mut buffer,
+                                    &format!(
+                                        "{cmd}{}",
+                                        if matched_list.len() == 1 { " " } else { "" }
+                                    ),
+                                    &mut stdout,
+                                )?;
                             } else {
                                 if is_last_tab_pressed {
                                     matched_list.sort();
@@ -528,6 +549,21 @@ impl CommandSpec {
     }
 }
 
+impl TryFrom<Vec<String>> for AstNode {
+    type Error = String;
+
+    fn try_from(value: Vec<String>) -> std::result::Result<Self, Self::Error> {
+        if value.iter().any(|s| "|".eq(s)) {
+            let mut cmds = vec![];
+            for cmd in value.split(|s| "|".eq(s)) {
+                cmds.push(CommandSpec::try_from(cmd.to_vec())?);
+            }
+            Ok(AstNode::Pipeline(cmds))
+        } else {
+            Ok(AstNode::Command(CommandSpec::try_from(value)?))
+        }
+    }
+}
 impl TryFrom<Vec<String>> for CommandSpec {
     type Error = String;
 
@@ -597,6 +633,7 @@ enum RedirectOp {
 }
 
 #[allow(unused)]
+#[derive(Debug)]
 enum AstNode {
     Command(CommandSpec),
     Pipeline(Vec<CommandSpec>),
@@ -683,6 +720,16 @@ fn test_spilt_input() {
             eprintln!("{}", err);
         }
     }
+
+    let args = spilt_input("  echo 'hello''world' | cat /tmp/aa > bb.txt | c");
+    match args {
+        Ok(args) => {
+            println!("{:?}", AstNode::try_from(args));
+        }
+        Err(err) => {
+            eprintln!("{}", err);
+        }
+    }
 }
 
 #[test]
@@ -720,6 +767,53 @@ fn test_spilt_output() -> Result<()> {
             res.iter().map(|s| s.to_string()).collect::<Vec<String>>()
         );
         println!("  passed");
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_nix() -> Result<()> {
+    // 创建 pipe
+    let (read_fd, write_fd) = pipe()?;
+
+    let fd = OpenOptions::new().read(true).write(true).truncate(true).create(true).open("/tmp/hello.aa")?;
+    // ========== 第一个子进程：echo hello ==========
+    match unsafe { fork()? } {
+        ForkResult::Child => {
+            // stdout -> pipe write end
+            dup2(write_fd, 1)?;
+            close(read_fd)?;
+            close(write_fd)?;
+
+            execvp(c"echo", &[c"echo", c"hello"])?;
+
+            unreachable!();
+        }
+        ForkResult::Parent { .. } => {}
+    }
+
+    // ========== 第二个子进程：wc ==========
+    match unsafe { fork()? } {
+        ForkResult::Child => {
+            // stdin -> pipe read end
+            dup2(read_fd, 0)?;
+            close(read_fd)?;
+            close(write_fd)?;
+
+            execvp(c"wc", &[c"wc"])?;
+
+            unreachable!();
+        }
+        ForkResult::Parent { .. } => {
+            // 父进程必须关闭 pipe 两端
+            close(read_fd)?;
+            close(write_fd)?;
+
+            // 等待两个子进程
+            waitpid(None, None)?;
+            waitpid(None, None)?;
+        }
     }
 
     Ok(())

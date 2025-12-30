@@ -17,6 +17,8 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::str::FromStr;
 use std::{env, fs};
+use nix::fcntl::{open, OFlag};
+use nix::sys::stat::Mode;
 
 mod trie;
 
@@ -774,46 +776,106 @@ fn test_spilt_output() -> Result<()> {
 
 #[test]
 fn test_nix() -> Result<()> {
-    // 创建 pipe
-    let (read_fd, write_fd) = pipe()?;
 
-    let fd = OpenOptions::new().read(true).write(true).truncate(true).create(true).open("/tmp/hello.aa")?;
-    // ========== 第一个子进程：echo hello ==========
+    // ========== pipeline: 3 commands ==========
+    // echo hello > /tmp/test.out | cat /tmp/test.out 2> /tmp/out.err | wc
+
+
+    // ---------- pipe 1 ----------
+    let (p1_read, p1_write) = pipe()?;
+
     match unsafe { fork()? } {
         ForkResult::Child => {
-            // stdout -> pipe write end
-            dup2(write_fd, 1)?;
-            close(read_fd)?;
-            close(write_fd)?;
+            // stdout -> pipe
+            dup2(p1_write, 1)?;
+            close(p1_read)?;
+            close(p1_write)?;
 
-            execvp(c"echo", &[c"echo", c"hello"])?;
+            // > /tmp/test.out （覆盖 pipe）
+            let out = open(
+                "/tmp/test.out",
+                OFlag::O_CREAT | OFlag::O_WRONLY | OFlag::O_TRUNC,
+                Mode::from_bits_truncate(0o644),
+            )?;
+            dup2(out, 1)?;
+            close(out)?;
 
+            execvp(
+                c"echo",
+                &[
+                    c"echo",
+                    c"hello",
+                ],
+            )?;
             unreachable!();
         }
         ForkResult::Parent { .. } => {}
     }
 
-    // ========== 第二个子进程：wc ==========
+    close(p1_write)?;
+
+    // ---------- pipe 2 ----------
+    let (p2_read, p2_write) = pipe()?;
+
     match unsafe { fork()? } {
         ForkResult::Child => {
-            // stdin -> pipe read end
-            dup2(read_fd, 0)?;
-            close(read_fd)?;
-            close(write_fd)?;
+            // stdin <- pipe1
+            dup2(p1_read, 0)?;
+            // stdout -> pipe2
+            dup2(p2_write, 1)?;
 
-            execvp(c"wc", &[c"wc"])?;
+            close(p1_read)?;
+            close(p2_read)?;
+            close(p2_write)?;
 
+            // 2> /tmp/out.err
+            let err = open(
+                "/tmp/out.err",
+                OFlag::O_CREAT | OFlag::O_WRONLY | OFlag::O_TRUNC,
+                Mode::from_bits_truncate(0o644),
+            )?;
+            dup2(err, 2)?;
+            close(err)?;
+
+            execvp(
+                c"cat",
+                &[
+                    c"cat",
+                    c"/tmp/test.out",
+                    c"/tmp/notexists",
+                ],
+            )?;
             unreachable!();
         }
-        ForkResult::Parent { .. } => {
-            // 父进程必须关闭 pipe 两端
-            close(read_fd)?;
-            close(write_fd)?;
+        ForkResult::Parent { .. } => {}
+    }
 
-            // 等待两个子进程
-            waitpid(None, None)?;
-            waitpid(None, None)?;
+    close(p1_read)?;
+    close(p2_write)?;
+
+    // ---------- last command ----------
+    match unsafe { fork()? } {
+        ForkResult::Child => {
+            // stdin <- pipe2
+            dup2(p2_read, 0)?;
+            close(p2_read)?;
+
+            execvp(
+                c"wc",
+                &[
+                    c"wc",
+                ],
+            )?;
+            unreachable!();
         }
+        ForkResult::Parent { .. } => {}
+    }
+
+    close(p2_read)?;
+
+    // ---------- wait ----------
+    for _ in 0..3 {
+        waitpid(None, None)?;
     }
 
     Ok(())

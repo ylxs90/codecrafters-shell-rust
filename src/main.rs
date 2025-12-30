@@ -1,24 +1,24 @@
 use anyhow::Result;
-use crossterm::event::{read, Event, KeyCode, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyModifiers, read};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use crossterm::{cursor, execute};
 use homedir::get_my_home;
 use is_executable::IsExecutable;
+use nix::fcntl::{OFlag, open};
+use nix::sys::stat::Mode;
 use nix::sys::wait::waitpid;
-use nix::unistd::{close, dup2, execvp, fork, pipe, ForkResult};
+use nix::unistd::{ForkResult, close, dup2, execvp, fork, pipe};
 use std::cmp::{max, min};
 use std::collections::HashSet;
-use std::fs::{read_dir, read_to_string, OpenOptions};
+use std::fs::{OpenOptions, read_dir, read_to_string};
 use std::io::Stdout;
 #[allow(unused_imports)]
-use std::io::{self, stdout, Write};
+use std::io::{self, Write, stdout};
 use std::os::fd::{AsRawFd, RawFd};
 use std::path::PathBuf;
 use std::process::Command;
 use std::str::FromStr;
 use std::{env, fs};
-use nix::fcntl::{open, OFlag};
-use nix::sys::stat::Mode;
 
 mod trie;
 
@@ -219,6 +219,12 @@ fn main() {
             }
         }
     }
+}
+
+#[derive(Debug, Default)]
+struct RunningConfig {
+    current_path: PathBuf,
+    path: Vec<PathBuf>,
 }
 
 fn find(paths: &Vec<PathBuf>, cmd: String) -> Option<String> {
@@ -776,12 +782,11 @@ fn test_spilt_output() -> Result<()> {
 
 #[test]
 fn test_nix() -> Result<()> {
-
     // ========== pipeline: 3 commands ==========
     // echo hello > /tmp/test.out | cat /tmp/test.out 2> /tmp/out.err | wc
 
-
     // ---------- pipe 1 ----------
+
     let (p1_read, p1_write) = pipe()?;
 
     match unsafe { fork()? } {
@@ -800,13 +805,7 @@ fn test_nix() -> Result<()> {
             dup2(out, 1)?;
             close(out)?;
 
-            execvp(
-                c"echo",
-                &[
-                    c"echo",
-                    c"hello",
-                ],
-            )?;
+            execvp(c"echo", &[c"echo", c"hello"])?;
             unreachable!();
         }
         ForkResult::Parent { .. } => {}
@@ -837,14 +836,7 @@ fn test_nix() -> Result<()> {
             dup2(err, 2)?;
             close(err)?;
 
-            execvp(
-                c"cat",
-                &[
-                    c"cat",
-                    c"/tmp/test.out",
-                    c"/tmp/notexists",
-                ],
-            )?;
+            env::set_current_dir("/tmp")?;
             unreachable!();
         }
         ForkResult::Parent { .. } => {}
@@ -860,12 +852,7 @@ fn test_nix() -> Result<()> {
             dup2(p2_read, 0)?;
             close(p2_read)?;
 
-            execvp(
-                c"wc",
-                &[
-                    c"wc",
-                ],
-            )?;
+            execvp(c"wc", &[c"wc"])?;
             unreachable!();
         }
         ForkResult::Parent { .. } => {}
@@ -877,6 +864,44 @@ fn test_nix() -> Result<()> {
     for _ in 0..3 {
         waitpid(None, None)?;
     }
+
+
+    Ok(())
+}
+
+
+#[test]
+fn test_pipe_with_cd() -> Result<()>{
+    println!("{}", env::current_dir()?.to_str().unwrap());
+    // cd /tmp | pwd
+
+    let (p_read, p_write) = pipe()?;
+
+    match unsafe {fork()?} {
+        ForkResult::Parent { .. } => {}
+        ForkResult::Child => {
+            dup2(p_write, 1)?;
+            close(p_write)?;
+            close(p_read)?;
+            env::set_current_dir("/tmp")?;
+        }
+    }
+    println!("{}", env::current_dir()?.to_str().unwrap());
+    match unsafe { fork()? } {
+        ForkResult::Parent { .. } => {}
+        ForkResult::Child => {
+            dup2(p_read, 0)?;
+            close(p_read)?;
+            close(p_write)?;
+            execvp(c"pwd", &[c"pwd"])?;
+
+        }
+    }
+
+    for _ in 0..2 {
+        waitpid(None, None)?;
+    }
+    println!("{}", env::current_dir()?.to_str().unwrap());
 
     Ok(())
 }

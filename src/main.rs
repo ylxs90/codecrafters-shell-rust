@@ -1,15 +1,14 @@
+use crate::ExecResult::{Continue, Exit};
 use anyhow::Result;
 use crossterm::event::{Event, KeyCode, KeyModifiers, read};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use crossterm::{cursor, execute};
-use homedir::get_my_home;
 use is_executable::IsExecutable;
-use nix::fcntl::{OFlag, open};
-use nix::sys::stat::Mode;
 use nix::sys::wait::waitpid;
 use nix::unistd::{ForkResult, close, dup2, execvp, fork, pipe};
 use std::cmp::{max, min};
 use std::collections::HashSet;
+use std::ffi::CString;
 use std::fs::{OpenOptions, read_dir, read_to_string};
 use std::io::Stdout;
 #[allow(unused_imports)]
@@ -18,14 +17,16 @@ use std::os::fd::{AsRawFd, RawFd};
 use std::path::PathBuf;
 use std::process::Command;
 use std::str::FromStr;
+use std::string::ToString;
 use std::{env, fs};
 
 mod trie;
 
+const BUILT_IN: &[&str] = &["echo", "exit", "type", "pwd", "cd", "history"];
+
 fn main() {
     // You can use print statements as follows for debugging, they'll be visible when running tests.
     // println!("Logs from your program will appear here!");
-    let mut current_path = env::current_dir().unwrap();
     let path = env::var("PATH").unwrap_or_default();
     let path: Vec<PathBuf> = path
         .trim()
@@ -35,12 +36,11 @@ fn main() {
         .collect();
     // println!("{:?}", path);
 
-    let built_in = vec!["echo", "exit", "type", "pwd", "cd", "history"];
     let mut records: Vec<String> = Vec::new();
     // Uncomment this block to pass the first stage
     let mut cmd_list = vec![];
 
-    built_in.iter().map(|s| s.to_string()).for_each(|s| {
+    BUILT_IN.iter().map(|s| s.to_string()).for_each(|s| {
         cmd_list.push(s.clone());
     });
     // path.iter().for_each(|p| println!("{p:?}"));
@@ -53,7 +53,6 @@ fn main() {
             cmd_list.push(c.to_string());
         });
 
-    // println!("build complete_dictionary use {}ms", now.elapsed().as_millis());
     let history_file = env::var("HISTFILE");
     match history_file.clone() {
         Ok(history_file) => {
@@ -65,10 +64,8 @@ fn main() {
         }
         _ => {}
     }
-    let mut saved_fds = vec![];
 
     loop {
-        restore_redirects(&saved_fds).unwrap();
         print!("$ ");
         stdout().flush().unwrap();
 
@@ -79,152 +76,234 @@ fn main() {
         }
 
         match spilt_input(&input) {
-            Ok(tokens) => match CommandSpec::try_from(tokens) {
-                Ok(cmd) => {
-                    // println!("{:?}", cmd);
-                    saved_fds = match apply_redirects(&cmd.redirects, &current_path) {
-                        Err(e) => {
-                            eprint!("{}", e);
+            Ok(tokens) => {
+                records.push(input.trim().to_string());
+                match AstNode::try_from(tokens) {
+                    Ok(node) => match node {
+                        AstNode::Command(cmd) => {
+                            let saved_fds = apply_redirects(&cmd.redirects).unwrap();
+                            let result =
+                                execute_cmd(cmd, &mut records, &input, &history_file, &path);
+                            restore_redirects(&saved_fds).unwrap();
+
+                            match result {
+                                Continue => continue,
+                                Exit => break,
+                            }
+                        }
+                        AstNode::Pipeline(cmds) => {
+                            let len = cmds.len();
+                            if len > 2 {
+                                eprintln!("error: only support two commands in pipeline");
+                                continue;
+                            }
+
+                            let (read_fd, write_fd) = pipe().unwrap();
+
+                            match unsafe { fork().unwrap() } {
+                                ForkResult::Child => {
+                                    let cmd = cmds[0].clone();
+                                    // child process: first command
+                                    dup2(write_fd, 1).unwrap(); // redirect stdout to pipe write end
+                                    close(read_fd).unwrap();
+                                    close(write_fd).unwrap();
+                                    let x: Vec<CString> = cmd
+                                        .argv
+                                        .iter()
+                                        .map(|s| CString::from_str(s).unwrap())
+                                        .collect();
+
+                                    let c = CString::from_str(cmd.command().as_str()).unwrap();
+                                    execvp(&c, &x).unwrap();
+                                    unreachable!();
+                                }
+                                _ => {}
+                            }
+
+                            match unsafe { fork().unwrap() } {
+                                ForkResult::Child => {
+                                    let cmd = cmds[1].clone();
+
+                                    // child process: first command
+                                    dup2(read_fd, 0).unwrap(); // redirect stdout to pipe write end
+                                    close(write_fd).unwrap();
+                                    let x: Vec<CString> = cmd
+                                        .argv
+                                        .iter()
+                                        .map(|s| CString::from_str(s).unwrap())
+                                        .collect();
+
+                                    let c = CString::from_str(cmd.command().as_str()).unwrap();
+                                    execvp(&c, &x).unwrap();
+                                    unreachable!();
+                                }
+                                _ => {}
+                            }
+
+                            close(read_fd).unwrap();
+                            close(write_fd).unwrap();
+
+                            for _ in 0..cmds.len() {
+                                waitpid(None, None).unwrap();
+                            }
+
                             continue;
                         }
-                        Ok(saved_fds) => saved_fds,
-                    };
-                    let argv = cmd.argv.iter().map(String::as_str).collect::<Vec<_>>();
-                    if argv.is_empty() {
-                        continue;
-                    } else {
-                        records.push(input.trim().to_string());
-                    }
-
-                    match cmd.command().as_str() {
-                        "history" => {
-                            if argv.len() > 2 {
-                                match argv[1] {
-                                    "-r" => read_to_string(argv[2])
-                                        .unwrap()
-                                        .lines()
-                                        .filter(|l| !l.is_empty())
-                                        .for_each(|l| records.push(l.trim().to_string())),
-                                    "-w" => {
-                                        let mut history = records.join("\n");
-                                        history.push('\n');
-                                        fs::write(argv[2], history).unwrap();
-                                    }
-                                    "-a" => {
-                                        let mut file =
-                                            OpenOptions::new().append(true).open(argv[2]).unwrap();
-                                        let mut history = records.join("\n");
-                                        history.push('\n');
-                                        write!(file, "{}", history).unwrap();
-                                        records.clear();
-                                    }
-                                    _ => {}
-                                }
-                                continue;
-                            }
-
-                            let mut skip = 0;
-                            if argv.len() > 1
-                                && let Ok(n) = argv[1].parse::<usize>()
-                            {
-                                skip = max(records.len() - n, 0);
-                            }
-
-                            for (i, cmd) in records.iter().enumerate().skip(skip) {
-                                println!("{}  {cmd}", i + 1);
-                            }
-                        }
-                        "exit" => {
-                            match history_file {
-                                Ok(history_file) => {
-                                    let mut history = records.join("\n");
-                                    history.push('\n');
-                                    fs::write(history_file, history).unwrap();
-                                }
-                                Err(_) => {}
-                            }
-                            break;
-                        }
-                        "cd" => {
-                            let new_path = argv[1];
-                            if new_path == "~" {
-                                current_path = get_my_home().unwrap().unwrap();
-                            } else if new_path.starts_with("/") {
-                                match PathBuf::from_str(new_path) {
-                                    Ok(new_path) => {
-                                        current_path = real_path(new_path, current_path);
-                                    }
-                                    Err(_) => {
-                                        eprintln!("cd: {new_path}: No such file or directory");
-                                    }
-                                }
-                            } else {
-                                let mut temp = current_path.clone();
-                                temp.push(new_path);
-                                current_path = real_path(temp, current_path);
-                            }
-                        }
-                        "pwd" => {
-                            println!("{}", current_path.to_str().unwrap());
-                        }
-                        "echo" => {
-                            println!("{}", argv[1..].join(" "))
-                        }
-                        "type" => {
-                            if argv.len() < 2 {
-                                eprintln!("no argument after type");
-                                continue;
-                            }
-
-                            if built_in.contains(&argv[1]) {
-                                println!("{} is a shell builtin", argv[1]);
-                            } else {
-                                match find(&path, argv[1].to_string().clone()) {
-                                    None => {
-                                        // should be:
-                                        // println!("{}: command not found", vec[1]);
-                                        eprintln!("{}: not found", argv[1]);
-                                    }
-                                    Some(cmd) => {
-                                        println!("{} is {}", argv[1], cmd)
-                                    }
-                                }
-                            }
-                        }
-                        _cmd => match find(&path, _cmd.to_string()) {
-                            None => {
-                                eprintln!("{}: command not found", argv[0]);
-                            }
-                            Some(cmd) => {
-                                if cmd.trim().is_empty() {
-                                    continue;
-                                }
-                                let mut command = Command::new(_cmd);
-                                command.current_dir(current_path.clone());
-                                argv[1..].iter().for_each(|arg| {
-                                    command.arg(arg);
-                                });
-                                let x = command.output();
-                                let output = x.unwrap();
-                                print!("{}", String::from_utf8_lossy(output.stdout.as_slice()));
-                                eprint!("{}", String::from_utf8_lossy(output.stderr.as_slice()));
-                            }
-                        },
-                    }
+                    },
+                    Err(_) => continue,
                 }
-                Err(_) => continue,
-            },
+            }
             Err(e) => {
                 eprintln!("error: {}", e);
             }
         }
     }
 }
+enum ExecResult {
+    Continue,
+    Exit,
+}
 
-#[derive(Debug, Default)]
-struct RunningConfig {
-    current_path: PathBuf,
-    path: Vec<PathBuf>,
+fn execute_cmd(
+    cmd: CommandSpec,
+    records: &mut Vec<String>,
+    input: &String,
+    history_file: &Result<String, std::env::VarError>,
+    path: &Vec<PathBuf>,
+) -> ExecResult {
+    let saved_fds = match apply_redirects(&cmd.redirects) {
+        Err(e) => {
+            eprint!("{}", e);
+            return Continue;
+        }
+        Ok(saved_fds) => saved_fds,
+    };
+    let argv = cmd.argv.iter().map(String::as_str).collect::<Vec<_>>();
+    if argv.is_empty() {
+        return Continue;
+    }
+
+    match cmd.command().as_str() {
+        "history" => {
+            if argv.len() > 2 {
+                match argv[1] {
+                    "-r" => read_to_string(argv[2])
+                        .unwrap()
+                        .lines()
+                        .filter(|l| !l.is_empty())
+                        .for_each(|l| records.push(l.trim().to_string())),
+                    "-w" => {
+                        let mut history = records.join("\n");
+                        history.push('\n');
+                        fs::write(argv[2], history).unwrap();
+                    }
+                    "-a" => {
+                        let mut file = OpenOptions::new().append(true).open(argv[2]).unwrap();
+                        let mut history = records.join("\n");
+                        history.push('\n');
+                        write!(file, "{}", history).unwrap();
+                        records.clear();
+                    }
+                    _ => {}
+                }
+                return Continue;
+            }
+
+            let mut skip = 0;
+            if argv.len() > 1
+                && let Ok(n) = argv[1].parse::<usize>()
+            {
+                skip = max(records.len() - n, 0);
+            }
+
+            for (i, cmd) in records.iter().enumerate().skip(skip) {
+                println!("{}  {cmd}", i + 1);
+            }
+        }
+        "exit" => {
+            match history_file {
+                Ok(history_file) => {
+                    let mut history = records.join("\n");
+                    history.push('\n');
+                    fs::write(history_file, history).unwrap();
+                }
+                Err(_) => {}
+            }
+            return Exit;
+        }
+        "cd" => {
+            let new_path = argv[1];
+            if new_path == "~" {
+                env::set_current_dir(env::home_dir().unwrap()).unwrap();
+            } else if new_path.starts_with("/") {
+                match env::set_current_dir(new_path) {
+                    Ok(_) => {}
+                    Err(_) => {
+                        eprintln!("cd: {new_path}: No such file or directory");
+                    }
+                };
+            } else {
+                let mut temp = env::current_dir().unwrap();
+                temp.push(new_path);
+                match env::set_current_dir(temp) {
+                    Ok(_) => {}
+                    Err(_) => {
+                        eprintln!("cd: {new_path}: No such file or directory");
+                    }
+                }
+            }
+        }
+        "pwd" => {
+            println!("{}", env::current_dir().unwrap().to_str().unwrap());
+        }
+        "echo" => {
+            println!("{}", argv[1..].join(" "))
+        }
+        "type" => {
+            if argv.len() < 2 {
+                eprintln!("no argument after type");
+                return Continue;
+            }
+
+            if BUILT_IN.contains(&argv[1]) {
+                println!("{} is a shell builtin", argv[1]);
+            } else {
+                match find(&path, argv[1].to_string().clone()) {
+                    None => {
+                        // should be:
+                        // println!("{}: command not found", vec[1]);
+                        eprintln!("{}: not found", argv[1]);
+                    }
+                    Some(cmd) => {
+                        println!("{} is {}", argv[1], cmd)
+                    }
+                }
+            }
+        }
+        _cmd => match find(&path, _cmd.to_string()) {
+            None => {
+                eprintln!("{}: command not found", argv[0]);
+            }
+            Some(cmd) => {
+                if cmd.trim().is_empty() {
+                    return Continue;
+                }
+                let mut command = Command::new(_cmd);
+                // command.current_dir(current_path.clone());
+                argv[1..].iter().for_each(|arg| {
+                    command.arg(arg);
+                });
+                let x = command.output();
+                let output = x.unwrap();
+                print!("{}", String::from_utf8_lossy(output.stdout.as_slice()));
+                eprint!("{}", String::from_utf8_lossy(output.stderr.as_slice()));
+            }
+        },
+    }
+
+    restore_redirects(&saved_fds).unwrap();
+
+    Continue
 }
 
 fn find(paths: &Vec<PathBuf>, cmd: String) -> Option<String> {
@@ -238,6 +317,7 @@ fn find(paths: &Vec<PathBuf>, cmd: String) -> Option<String> {
     None
 }
 
+#[allow(unused)]
 fn real_path(new_path: PathBuf, current_path: PathBuf) -> PathBuf {
     if new_path.is_file() || new_path.is_dir() {
         new_path.canonicalize().unwrap()
@@ -336,14 +416,11 @@ fn spilt_input(input: &str) -> Result<Vec<String>, String> {
     Ok(vec)
 }
 
-fn apply_redirects(
-    redirects: &[Redirect],
-    current_dir: &PathBuf,
-) -> Result<Vec<(RawFd, RawFd)>, String> {
+fn apply_redirects(redirects: &[Redirect]) -> Result<Vec<(RawFd, RawFd)>, String> {
     let mut vec = Vec::new();
     for redirect in redirects {
         let f = if PathBuf::from(&redirect.target).is_absolute() {
-            let mut f = current_dir.clone();
+            let mut f = env::current_dir().unwrap();
             f.push(&redirect.target);
             f
         } else {
@@ -545,7 +622,7 @@ fn longest_common_prefix(items: &[&String]) -> String {
     prefix
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct CommandSpec {
     argv: Vec<String>,
     redirects: Vec<Redirect>,
@@ -675,6 +752,7 @@ fn test_find() {
 
 #[test]
 fn test_execute() {
+    use homedir::get_my_home;
     let mut command = Command::new("ls");
     command.arg("-l").arg("-a");
     let x = command.output();
@@ -782,6 +860,8 @@ fn test_spilt_output() -> Result<()> {
 
 #[test]
 fn test_nix() -> Result<()> {
+    use nix::fcntl::{OFlag, open};
+    use nix::sys::stat::Mode;
     // ========== pipeline: 3 commands ==========
     // echo hello > /tmp/test.out | cat /tmp/test.out 2> /tmp/out.err | wc
 
@@ -865,19 +945,17 @@ fn test_nix() -> Result<()> {
         waitpid(None, None)?;
     }
 
-
     Ok(())
 }
 
-
 #[test]
-fn test_pipe_with_cd() -> Result<()>{
+fn test_pipe_with_cd() -> Result<()> {
     println!("{}", env::current_dir()?.to_str().unwrap());
     // cd /tmp | pwd
 
     let (p_read, p_write) = pipe()?;
 
-    match unsafe {fork()?} {
+    match unsafe { fork()? } {
         ForkResult::Parent { .. } => {}
         ForkResult::Child => {
             dup2(p_write, 1)?;
@@ -894,7 +972,6 @@ fn test_pipe_with_cd() -> Result<()>{
             close(p_read)?;
             close(p_write)?;
             execvp(c"pwd", &[c"pwd"])?;
-
         }
     }
 

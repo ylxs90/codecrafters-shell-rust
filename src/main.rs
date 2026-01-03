@@ -2,7 +2,7 @@ use crate::ExecResult::{Continue, Exit};
 use anyhow::Result;
 use crossterm::event::{read, Event, KeyCode, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
-use crossterm::{cursor, execute};
+use crossterm::{cursor, execute, ExecutableCommand};
 use is_executable::IsExecutable;
 use nix::sys::wait::waitpid;
 use nix::unistd::{close, dup2, execvp, fork, pipe, ForkResult};
@@ -862,15 +862,11 @@ fn longest_common_prefix<T: AsRef<str>>(items: &[T]) -> String {
 struct ShellState {
     history: History,
     history_file: Option<PathBuf>,
-
 }
 
 struct History {
     entries: Vec<String>,
 }
-
-
-
 
 #[derive(Debug, Default, Clone)]
 struct CommandSpec {
@@ -975,6 +971,19 @@ enum RedirectOp {
 enum AstNode {
     Command(CommandSpec),
     Pipeline(Vec<CommandSpec>),
+}
+
+impl AstNode {
+    fn execute(&mut self, cfg: &mut ShellState) -> Result<()> {
+        match self {
+            AstNode::Command(cmd) => {
+                if cmd.is_built_in() {} else {}
+            }
+            AstNode::Pipeline(cmds) => {}
+        }
+
+        todo!()
+    }
 }
 
 fn build_complete_dictionary(paths: &[PathBuf]) -> Result<Vec<String>, String> {

@@ -1,18 +1,18 @@
 #[allow(unused_imports)]
 use crate::ExecResult::{Continue, Exit};
 use anyhow::Result;
-use crossterm::event::{read, Event, KeyCode, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyModifiers, read};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use crossterm::{cursor, execute};
 use is_executable::IsExecutable;
 use nix::sys::wait::waitpid;
-use nix::unistd::{close, dup2, execvp, fork, pipe, ForkResult};
+use nix::unistd::{ForkResult, close, dup2, execvp, fork, pipe};
 use std::cmp::{max, min};
 use std::collections::HashSet;
 use std::ffi::CString;
-use std::fs::{read_dir, read_to_string, OpenOptions};
+use std::fs::{OpenOptions, read_dir, read_to_string};
 use std::io::Stdout;
-use std::io::{stdout, Write};
+use std::io::{Write, stdout};
 use std::os::fd::{AsRawFd, RawFd};
 use std::path::PathBuf;
 use std::process::Command;
@@ -736,79 +736,7 @@ fn read_line_crossterm(history: &[String], cmd_list: &[String]) -> Result<String
                     }
                     KeyCode::Left | KeyCode::Right => {}
                     KeyCode::Tab => {
-                        if buffer.starts_with("./") {
-                            let dir = env::current_dir().unwrap();
-                            let cmds: Vec<String> = read_dir(&dir)?
-                                .into_iter()
-                                .filter(Result::is_ok)
-                                .map(Result::unwrap)
-                                .filter(|p| {
-                                    let p = p.path();
-                                    p.is_file() && p.is_executable()
-                                })
-                                .map(|p| p.file_name().to_str().unwrap().to_string())
-                                .map(|f| {
-                                    let mut f = f.clone();
-                                    f.insert_str(0, "./");
-                                    f
-                                })
-                                .filter(|s| s.starts_with(&buffer))
-                                .collect();
-
-                            let cmd = longest_common_prefix(&cmds);
-                            if cmd == buffer && cmds.len() > 1 {
-                                let list = cmds.join(" ");
-                                print!("\r\n{list}\r\n$ {buffer}");
-                                stdout.flush()?;
-                            } else {
-                                replace_line(&mut buffer, &cmd, &mut stdout)?;
-                            }
-                        } else {
-                            let mut matched_list: HashSet<&String> = HashSet::new();
-                            cmd_list
-                                .iter()
-                                .filter(|c| c.starts_with(&buffer))
-                                .for_each(|c| {
-                                    matched_list.insert(c);
-                                });
-
-                            if matched_list.is_empty() {
-                                print!("{}", '\x07');
-                                stdout.flush()?;
-                            } else {
-                                let mut matched_list: Vec<&String> =
-                                    matched_list.iter().map(|s| *s).collect();
-                                let cmd = longest_common_prefix(&matched_list);
-                                if buffer != cmd {
-                                    replace_line(
-                                        &mut buffer,
-                                        &format!(
-                                            "{cmd}{}",
-                                            if matched_list.len() == 1 { " " } else { "" }
-                                        ),
-                                        &mut stdout,
-                                    )?;
-                                } else {
-                                    if is_last_tab_pressed {
-                                        matched_list.sort();
-                                        let mut iter = matched_list.iter().peekable();
-                                        let mut list = String::new();
-                                        iter.clone().for_each(|s| {
-                                            list.push_str(s);
-                                            if iter.peek().is_some() {
-                                                list.push_str("  ");
-                                            }
-                                        });
-                                        print!("\r\n{list}\r\n$ {buffer}");
-                                        stdout.flush()?;
-                                    } else {
-                                        print!("\x07");
-                                        stdout.flush()?;
-                                        is_last_tab_pressed = true;
-                                    }
-                                }
-                            }
-                        }
+                        try_complete(cmd_list, &mut stdout, &mut buffer, &mut is_last_tab_pressed)?;
                     }
                     _ => {}
                 }
@@ -819,6 +747,83 @@ fn read_line_crossterm(history: &[String], cmd_list: &[String]) -> Result<String
 
     disable_raw_mode()?;
     Ok(buffer)
+}
+
+fn try_complete(
+    cmd_list: &[String],
+    stdout: &mut Stdout,
+    buffer: &mut String,
+    is_last_tab_pressed: &mut bool,
+) -> Result<(), anyhow::Error> {
+    Ok(if buffer.starts_with("./") {
+        let dir = env::current_dir().unwrap();
+        let cmds: Vec<String> = read_dir(&dir)?
+            .into_iter()
+            .filter(Result::is_ok)
+            .map(Result::unwrap)
+            .filter(|p| {
+                let p = p.path();
+                p.is_file() && p.is_executable()
+            })
+            .map(|p| p.file_name().to_str().unwrap().to_string())
+            .map(|f| {
+                let mut f = f.clone();
+                f.insert_str(0, "./");
+                f
+            })
+            .filter(|s| s.starts_with(&*buffer))
+            .collect();
+
+        let cmd = longest_common_prefix(&cmds);
+        if cmd == *buffer && cmds.len() > 1 {
+            let list = cmds.join(" ");
+            print!("\r\n{list}\r\n$ {buffer}");
+            stdout.flush()?;
+        } else {
+            replace_line(buffer, &cmd, stdout)?;
+        }
+    } else {
+        let mut matched_list: HashSet<&String> = HashSet::new();
+        cmd_list
+            .iter()
+            .filter(|c| c.starts_with(&*buffer))
+            .for_each(|c| {
+                matched_list.insert(c);
+            });
+
+        if matched_list.is_empty() {
+            print!("{}", '\x07');
+            stdout.flush()?;
+        } else {
+            let mut matched_list: Vec<&String> = matched_list.iter().map(|s| *s).collect();
+            let cmd = longest_common_prefix(&matched_list);
+            if *buffer != cmd {
+                replace_line(
+                    buffer,
+                    &format!("{cmd}{}", if matched_list.len() == 1 { " " } else { "" }),
+                    stdout,
+                )?;
+            } else {
+                if *is_last_tab_pressed {
+                    matched_list.sort();
+                    let mut iter = matched_list.iter().peekable();
+                    let mut list = String::new();
+                    iter.clone().for_each(|s| {
+                        list.push_str(s);
+                        if iter.peek().is_some() {
+                            list.push_str("  ");
+                        }
+                    });
+                    print!("\r\n{list}\r\n$ {buffer}");
+                    stdout.flush()?;
+                } else {
+                    print!("\x07");
+                    stdout.flush()?;
+                    *is_last_tab_pressed = true;
+                }
+            }
+        }
+    })
 }
 
 fn replace_line(buffer: &mut String, cmd: &String, stdout: &mut Stdout) -> Result<()> {
@@ -979,7 +984,9 @@ impl AstNode {
     fn execute(&mut self, _cfg: &mut ShellState) -> Result<()> {
         match self {
             AstNode::Command(cmd) => {
-                if cmd.is_built_in() {} else {}
+                if cmd.is_built_in() {
+                } else {
+                }
             }
             AstNode::Pipeline(_cmds) => {}
         }
@@ -1010,9 +1017,9 @@ fn build_complete_dictionary(paths: &[PathBuf]) -> Result<Vec<String>, String> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{find, spilt_input, AstNode};
+    use crate::{AstNode, find, spilt_input};
     use nix::sys::wait::waitpid;
-    use nix::unistd::{close, dup2, execvp, fork, pipe, ForkResult};
+    use nix::unistd::{ForkResult, close, dup2, execvp, fork, pipe};
     use std::env;
     use std::path::PathBuf;
     use std::process::Command;
@@ -1133,7 +1140,7 @@ mod tests {
 
     #[test]
     fn test_nix() -> anyhow::Result<()> {
-        use nix::fcntl::{open, OFlag};
+        use nix::fcntl::{OFlag, open};
         use nix::sys::stat::Mode;
         // ========== pipeline: 3 commands ==========
         // echo hello > /tmp/test.out | cat /tmp/test.out 2> /tmp/out.err | wc

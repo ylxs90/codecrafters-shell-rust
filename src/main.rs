@@ -1,8 +1,9 @@
+#[allow(unused_imports)]
 use crate::ExecResult::{Continue, Exit};
 use anyhow::Result;
 use crossterm::event::{read, Event, KeyCode, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
-use crossterm::{cursor, execute, ExecutableCommand};
+use crossterm::{cursor, execute};
 use is_executable::IsExecutable;
 use nix::sys::wait::waitpid;
 use nix::unistd::{close, dup2, execvp, fork, pipe, ForkResult};
@@ -11,8 +12,7 @@ use std::collections::HashSet;
 use std::ffi::CString;
 use std::fs::{read_dir, read_to_string, OpenOptions};
 use std::io::Stdout;
-#[allow(unused_imports)]
-use std::io::{self, stdout, Write};
+use std::io::{stdout, Write};
 use std::os::fd::{AsRawFd, RawFd};
 use std::path::PathBuf;
 use std::process::Command;
@@ -858,13 +858,14 @@ fn longest_common_prefix<T: AsRef<str>>(items: &[T]) -> String {
 
     prefix
 }
-
-struct ShellState {
+#[allow(unused)]
+pub struct ShellState {
     history: History,
     history_file: Option<PathBuf>,
 }
 
-struct History {
+#[allow(unused)]
+pub struct History {
     entries: Vec<String>,
 }
 
@@ -974,12 +975,13 @@ enum AstNode {
 }
 
 impl AstNode {
-    fn execute(&mut self, cfg: &mut ShellState) -> Result<()> {
+    #[allow(unused)]
+    fn execute(&mut self, _cfg: &mut ShellState) -> Result<()> {
         match self {
             AstNode::Command(cmd) => {
                 if cmd.is_built_in() {} else {}
             }
-            AstNode::Pipeline(cmds) => {}
+            AstNode::Pipeline(_cmds) => {}
         }
 
         todo!()

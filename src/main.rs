@@ -10,7 +10,7 @@ use nix::unistd::{ForkResult, close, dup2, execvp, fork, pipe};
 use std::cmp::{max, min};
 use std::collections::HashSet;
 use std::ffi::CString;
-use std::fs::{OpenOptions, read_dir, read_to_string};
+use std::fs::{FileType, OpenOptions, read_dir, read_to_string};
 use std::io::Stdout;
 use std::io::{Write, stdout};
 use std::os::fd::{AsRawFd, RawFd};
@@ -755,7 +755,7 @@ fn try_complete(
     buffer: &mut String,
     is_last_tab_pressed: &mut bool,
 ) -> Result<(), anyhow::Error> {
-    Ok(if buffer.starts_with("./") {
+    if buffer.starts_with("./") {
         let dir = env::current_dir().unwrap();
         let cmds: Vec<String> = read_dir(&dir)?
             .into_iter()
@@ -823,7 +823,8 @@ fn try_complete(
                 }
             }
         }
-    })
+    }
+    Ok(())
 }
 
 fn replace_line(buffer: &mut String, cmd: &String, stdout: &mut Stdout) -> Result<()> {
@@ -863,6 +864,23 @@ fn longest_common_prefix<T: AsRef<str>>(items: &[T]) -> String {
 
     prefix
 }
+
+fn longest_name_in_dir(cur: &str, path: &PathBuf) -> String {
+    let items = read_dir(&path).unwrap();
+    let mut matched = vec![];
+    items.for_each(|s| {
+        let f = s.unwrap();
+        if f.file_name().into_string().unwrap().starts_with(cur) {
+            matched.push(if f.metadata().unwrap().is_dir() {
+                format!("{}/", f.file_name().to_str().unwrap())
+            } else {
+                f.file_name().to_str().unwrap().to_owned()
+            });
+        }
+    });
+    longest_common_prefix(&matched)
+}
+
 #[allow(unused)]
 pub struct ShellState {
     history: History,

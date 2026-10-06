@@ -10,7 +10,7 @@ use nix::unistd::{ForkResult, close, dup2, execvp, fork, pipe};
 use std::cmp::{max, min};
 use std::collections::HashSet;
 use std::ffi::CString;
-use std::fs::{FileType, OpenOptions, read_dir, read_to_string};
+use std::fs::{OpenOptions, read_dir, read_to_string};
 use std::io::Stdout;
 use std::io::{Write, stdout};
 use std::os::fd::{AsRawFd, RawFd};
@@ -52,15 +52,12 @@ fn main() {
         });
 
     let history_file = env::var("HISTFILE");
-    match history_file.clone() {
-        Ok(history_file) => {
-            read_to_string(history_file)
-                .unwrap()
-                .lines()
-                .filter(|l| !l.is_empty())
-                .for_each(|l| records.push(l.trim().to_string()));
-        }
-        _ => {}
+    if let Ok(history_file) = history_file.clone() {
+        read_to_string(history_file)
+            .unwrap()
+            .lines()
+            .filter(|l| !l.is_empty())
+            .for_each(|l| records.push(l.trim().to_string()));
     }
 
     loop {
@@ -681,67 +678,64 @@ fn read_line_crossterm(history: &[String], cmd_list: &[String]) -> Result<String
     let mut i: i32 = history.len() as i32;
     let mut is_last_tab_pressed = false;
     loop {
-        match read()? {
-            Event::Key(event) => {
-                if event.code != KeyCode::Tab {
-                    is_last_tab_pressed = false;
-                }
+        if let Event::Key(event) = read()? {
+            if event.code != KeyCode::Tab {
+                is_last_tab_pressed = false;
+            }
 
-                match event.code {
-                    KeyCode::Char(c) => {
-                        if event.modifiers == KeyModifiers::CONTROL && c == 'c' {
-                            println!(" ^C");
-                            disable_raw_mode()?;
-                            std::process::exit(0);
-                        } else if event.modifiers == KeyModifiers::CONTROL && c == 'j' {
-                            // ctrl + j acts Enter in bash/zsh
-                            print!("\r\n");
-                            break;
-                        } else {
-                            buffer.push(c);
-                            print!("{}", c);
-                            stdout.flush()?;
-                        }
-                    }
-                    KeyCode::Backspace => {
-                        if !buffer.is_empty() {
-                            buffer.pop();
-                            print!("\x08 \x08");
-                            stdout.flush()?;
-                        }
-                    }
-                    KeyCode::Enter => {
+            match event.code {
+                KeyCode::Char(c) => {
+                    if event.modifiers == KeyModifiers::CONTROL && c == 'c' {
+                        println!(" ^C");
+                        disable_raw_mode()?;
+                        std::process::exit(0);
+                    } else if event.modifiers == KeyModifiers::CONTROL && c == 'j' {
+                        // ctrl + j acts Enter in bash/zsh
                         print!("\r\n");
                         break;
+                    } else {
+                        buffer.push(c);
+                        print!("{}", c);
+                        stdout.flush()?;
                     }
-                    KeyCode::Up => {
-                        if history.is_empty() {
-                            continue;
-                        }
-                        i = max(0, i - 1);
-
-                        if let Some(cmd) = history.iter().nth(i as usize) {
-                            replace_line(&mut buffer, cmd, &mut stdout)?;
-                        }
-                    }
-                    KeyCode::Down => {
-                        if history.is_empty() {
-                            continue;
-                        }
-                        i = min(history.len() as i32 - 1, i + 1);
-
-                        if let Some(cmd) = history.iter().nth(i as usize) {
-                            replace_line(&mut buffer, cmd, &mut stdout)?;
-                        }
-                    }
-                    KeyCode::Left | KeyCode::Right => {}
-                    KeyCode::Tab => {
-                        try_complete(cmd_list, &mut stdout, &mut buffer, &mut is_last_tab_pressed)?;
-                    }
-                    _ => {}
                 }
+                KeyCode::Backspace => {
+                    if !buffer.is_empty() {
+                        buffer.pop();
+                        print!("\x08 \x08");
+                        stdout.flush()?;
+                    }
+                }
+                KeyCode::Enter => {
+                    print!("\r\n");
+                    break;
+                }
+                KeyCode::Up => {
+                    if history.is_empty() {
+                        continue;
+                    }
+                    i = max(0, i - 1);
+
+                    if let Some(cmd) = history.iter().nth(i as usize) {
+                        replace_line(&mut buffer, cmd, &mut stdout)?;
+                    }
+                }
+                KeyCode::Down => {
+                    if history.is_empty() {
+                        continue;
+                    }
+                    i = min(history.len() as i32 - 1, i + 1);
+
+                    if let Some(cmd) = history.iter().nth(i as usize) {
+                        replace_line(&mut buffer, cmd, &mut stdout)?;
+                    }
+                }
+                KeyCode::Left | KeyCode::Right => {}
+                KeyCode::Tab => {
+                    try_complete(cmd_list, &mut stdout, &mut buffer, &mut is_last_tab_pressed)?;
+                }
+                _ => {}
             }
-            _ => {}
         }
     }
 
@@ -758,9 +752,7 @@ fn try_complete(
     if buffer.starts_with("./") {
         let dir = env::current_dir().unwrap();
         let cmds: Vec<String> = read_dir(&dir)?
-            .into_iter()
-            .filter(Result::is_ok)
-            .map(Result::unwrap)
+            .flatten()
             .filter(|p| {
                 let p = p.path();
                 p.is_file() && p.is_executable()
@@ -792,8 +784,24 @@ fn try_complete(
             });
 
         if matched_list.is_empty() {
-            print!("{}", '\x07');
-            stdout.flush()?;
+            let words = buffer.split_whitespace();
+            // let aa = words
+            //     .clone()
+            //     .into_iter()
+            //     .map(|s| s.to_string())
+            //     .collect::<Vec<String>>()
+            //     .join(" ");
+            // replace_line(buffer, &aa, stdout)?;
+            if let Some(last_word) = words.last() {
+                let name = longest_name_in_dir(last_word, &env::current_dir().unwrap());
+                if !name.is_empty() {
+                    let fill_str = &name[last_word.len()..];
+                    replace_line(buffer, &format!("{buffer}{fill_str} "), stdout)?;
+                }
+            } else {
+                print!("{}", '\x07');
+                stdout.flush()?;
+            }
         } else {
             let mut matched_list: Vec<&String> = matched_list.iter().map(|s| *s).collect();
             let cmd = longest_common_prefix(&matched_list);

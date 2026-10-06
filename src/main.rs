@@ -793,10 +793,18 @@ fn try_complete(
             //     .join(" ");
             // replace_line(buffer, &aa, stdout)?;
             if let Some(last_word) = words.last() {
-                let name = longest_name_in_dir(last_word, &env::current_dir().unwrap());
+                let name = longest_name_in_dir(last_word, &env::current_dir()?);
                 if !name.is_empty() {
                     let fill_str = &name[last_word.len()..];
-                    replace_line(buffer, &format!("{buffer}{fill_str} "), stdout)?;
+                    if !fill_str.is_empty() {
+                        replace_line(buffer, &format!("{buffer}{fill_str} "), stdout)?;
+                        *is_last_tab_pressed = false;
+                    } else {
+                        *is_last_tab_pressed = true;
+                    }
+                } else if *is_last_tab_pressed {
+                    print!("\x07");
+                    stdout.flush()?;
                 }
             } else {
                 print!("{}", '\x07');
